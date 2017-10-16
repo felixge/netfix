@@ -68,7 +68,7 @@ func (d *DB) Read(start, end time.Time) ([]Val, error) {
 	return vals, file.Close()
 }
 
-func (d *DB) Write(start time.Time, vals []Val) error {
+func (d *DB) Write(start time.Time, vals ...Val) error {
 	d.lock.Lock()
 	defer d.lock.Unlock()
 
