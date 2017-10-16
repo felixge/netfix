@@ -22,6 +22,8 @@ func TestWriteRead(t *testing.T) {
 	writeVals := []Val{1, 2, 3}
 	if err := db.Write(tt, writeVals...); err != nil {
 		t.Fatal(err)
+	} else if err := db.Flush(); err != nil {
+		t.Fatal(err)
 	}
 	readVals, err := db.Read(tt, tt.Add(3*time.Second))
 	if err != nil {
@@ -42,6 +44,7 @@ func BenchmarkWrite(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	defer db.Close()
 	now := time.Now()
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
@@ -50,4 +53,13 @@ func BenchmarkWrite(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+	if err := db.Flush(); err != nil {
+		b.Fatal(err)
+	}
+	b.StopTimer()
+	stats := db.Stats()
+	if stats.Seek > 1 {
+		b.Fatalf("seeks: got=%d want<=1")
+	}
+	//fmt.Printf("%#v\n", db.Stats())
 }
