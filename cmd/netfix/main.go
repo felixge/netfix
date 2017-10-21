@@ -29,7 +29,7 @@ func run() error {
 		log.Printf("db: migrated from version %d to %d", from, to)
 	}
 
-	outages, err := ndb.Outages(db, 0.02, 5*time.Minute)
+	outages, err := ndb.Outages(db, 0.01, 5*time.Minute)
 	if err != nil {
 		return err
 	}
@@ -40,7 +40,7 @@ func run() error {
 	)
 	for _, outage := range outages {
 		d := outage.Duration()
-		if d >= 5*time.Minute && outage.Loss() >= 0.1 {
+		if d >= 5*time.Minute && outage.Loss() >= 0.01 {
 			fmt.Printf("%s\n", outage)
 			count++
 			duration += d
