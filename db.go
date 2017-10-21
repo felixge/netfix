@@ -3,9 +3,21 @@ package netfix
 import (
 	"database/sql"
 	"fmt"
+	"time"
 )
 
-func Migrate(db *sql.DB) (from, to int, err error) {
+func OpenDB(dsn string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return nil, err
+	} else if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		return nil, err
+	}
+
+	return db, nil
+}
+
+func MigrateDB(db *sql.DB) (from, to int, err error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return 0, 0, err
@@ -20,8 +32,8 @@ CREATE TABLE schema_versions (
 );
 
 CREATE TABLE pings (
-	time integer PRIMARY KEY,
-	millisec integer,
+	start REAL PRIMARY KEY,
+	duration REAL,
 	timeout bool
 );`,
 			)
@@ -42,4 +54,44 @@ CREATE TABLE pings (
 	}
 	to = len(migrations)
 	return from, to, tx.Commit()
+}
+
+type DBOrTx interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
+type Ping struct {
+	ID      int
+	Seq     int
+	Start   time.Time
+	End     time.Time
+	Timeout bool
+}
+
+func (p Ping) String() string {
+	var d time.Duration
+	if !p.End.IsZero() {
+		d = p.End.Sub(p.Start)
+	}
+	return fmt.Sprintf(
+		"id=%d seq=%d start=%s end=%s duration=%s timeout=%t",
+		p.ID,
+		p.Seq,
+		p.Start,
+		p.End,
+		d,
+		p.Timeout,
+	)
+}
+
+func (p Ping) Insert(db DBOrTx) error {
+	const sql = `
+INSERT OR REPLACE INTO pings (start, duration, timeout)
+VALUES ($1, $2, $3)
+`
+
+	start := float64(p.Start.UnixNano()) / float64(time.Second)
+	duration := float64(p.End.Sub(p.Start).Nanoseconds()) / float64(time.Millisecond)
+	_, err := db.Exec(sql, start, duration, p.Timeout)
+	return err
 }
