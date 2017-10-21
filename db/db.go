@@ -69,6 +69,16 @@ type OutageFilter struct {
 	OutageGap      time.Duration
 }
 
+func (o OutageFilter) String() string {
+	return fmt.Sprintf(
+		"MinLoss=%.2f OutageLoss=%.2f OutageDuration=%s OutageGap=%s",
+		o.MinLoss,
+		o.OutageLoss,
+		o.OutageDuration,
+		o.OutageGap,
+	)
+}
+
 func Outages(db *sql.DB, f OutageFilter) (OutageList, error) {
 	const sql = `
 WITH timeout_mins AS (
