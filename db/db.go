@@ -62,12 +62,17 @@ CREATE TABLE pings (
 	return from, to, tx.Commit()
 }
 
-func Outages(db *sql.DB, maxLoss float64, gap time.Duration) ([]*Outage, error) {
+type OutageFilter struct {
+	MinLoss        float64
+	OutageLoss     float64
+	OutageDuration time.Duration
+	OutageGap      time.Duration
+}
+
+func Outages(db *sql.DB, f OutageFilter) (OutageList, error) {
 	const sql = `
 WITH timeout_mins AS (
-  SELECT
-    cast(start / 60 AS integer) * 60 AS start,
-    count(*)
+  SELECT DISTINCT cast(start / 60 AS integer) * 60 AS start
   FROM pings
   WHERE timeout = 1
   GROUP BY 1
@@ -98,13 +103,13 @@ WHERE loss > $1
 ORDER BY 1 ASC;
 `
 
-	rows, err := db.Query(sql, maxLoss)
+	rows, err := db.Query(sql, f.MinLoss)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var outages []*Outage
+	var outages OutageList
 	for rows.Next() {
 		var min LossMin
 		var minS string
@@ -119,7 +124,7 @@ ORDER BY 1 ASC;
 		var outage *Outage
 		if len(outages) > 0 {
 			outage = outages[len(outages)-1]
-			if min.Start.Sub(outage.End) >= gap {
+			if min.Start.Sub(outage.End) >= f.OutageGap {
 				outage = nil
 			}
 		}
@@ -136,7 +141,23 @@ ORDER BY 1 ASC;
 		return nil, err
 	}
 
-	return outages, nil
+	var filtered OutageList
+	for _, outage := range outages {
+		if outage.Duration() >= f.OutageDuration && outage.Loss() >= f.OutageLoss {
+			filtered = append(filtered, outage)
+		}
+	}
+	return filtered, nil
+}
+
+type OutageList []*Outage
+
+func (ol OutageList) Duration() time.Duration {
+	var total time.Duration
+	for _, o := range ol {
+		total += o.Duration()
+	}
+	return total
 }
 
 type Outage struct {

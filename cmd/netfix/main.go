@@ -29,24 +29,22 @@ func run() error {
 		log.Printf("db: migrated from version %d to %d", from, to)
 	}
 
-	outages, err := ndb.Outages(db, 0.01, 5*time.Minute)
+	start := time.Now()
+	outages, err := ndb.Outages(db, ndb.OutageFilter{
+		MinLoss:        0.01,
+		OutageLoss:     0.01,
+		OutageDuration: 15 * time.Minute,
+		OutageGap:      5 * time.Minute,
+	})
 	if err != nil {
 		return err
 	}
 
-	var (
-		duration time.Duration
-		count    int
-	)
-	for _, outage := range outages {
-		d := outage.Duration()
-		if d >= 5*time.Minute && outage.Loss() >= 0.01 {
-			fmt.Printf("%s\n", outage)
-			count++
-			duration += d
-		}
+	for _, o := range outages {
+		fmt.Printf("%s\n", o)
 	}
-	fmt.Printf("%d outages (%s)\n", count, duration)
+	fmt.Printf("%d outages (%s)\n", len(outages), outages.Duration())
+	fmt.Printf("%s\n", time.Since(start))
 
 	return nil
 }
