@@ -110,6 +110,7 @@ func (d *LegacyDecoder) Read(p *netfix.Ping) error {
 	} else if duration, err := time.ParseDuration(m[1] + m[2]); err != nil {
 		return err
 	} else {
+		p.Timeout = false
 		p.Start = p.End.Add(-duration)
 	}
 	return nil
