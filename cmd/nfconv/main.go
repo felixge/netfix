@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/felixge/netfix"
+	ndb "github.com/felixge/netfix/db"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -27,34 +28,42 @@ func run() error {
 		return errors.New("usage: nfconv <legacy_file> <nf_db>")
 	}
 
-	lf, err := os.Open(os.Args[1])
-	if err != nil {
-		return err
-	}
-	defer lf.Close()
-
-	db, err := netfix.OpenDB(os.Args[2])
+	db, err := ndb.Open(os.Args[2])
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
-	if from, to, err := netfix.MigrateDB(db); err != nil {
+	if from, to, err := ndb.Migrate(db); err != nil {
 		return err
 	} else if from != to {
 		log.Printf("db: migrated from version %d to %d", from, to)
 	}
+	if stats, err := Convert(os.Args[1], db); err != nil {
+		return err
+	} else {
+		fmt.Printf("%s\n", stats)
+	}
+	return nil
+}
+
+func Convert(legacyFile string, db *sql.DB) (Stats, error) {
+	stats := Stats{Start: time.Now()}
+	lf, err := os.Open(legacyFile)
+	if err != nil {
+		return stats, err
+	}
+	defer lf.Close()
 
 	tx, err := db.Begin()
 	if err != nil {
-		return err
+		return stats, err
 	}
 	defer tx.Rollback()
 
 	var (
-		ld    = NewLegacyDecoder(lf)
-		p     = &netfix.Ping{}
-		stats = Stats{Start: time.Now()}
+		ld = NewLegacyDecoder(lf)
+		p  = &ndb.Ping{}
 	)
 
 	for stats.Lines = 1; ; stats.Lines++ {
@@ -67,11 +76,10 @@ func run() error {
 			stats.Timeouts++
 		}
 		if err := p.Insert(tx); err != nil {
-			return err
+			return stats, err
 		}
 	}
-	fmt.Printf("%s\n", stats)
-	return tx.Commit()
+	return stats, tx.Commit()
 }
 
 func NewLegacyDecoder(r io.Reader) *LegacyDecoder {
@@ -85,7 +93,7 @@ type LegacyDecoder struct {
 
 var durationPattern = regexp.MustCompile("time=([0-9.]+) ([a-z]+)")
 
-func (d *LegacyDecoder) Read(p *netfix.Ping) error {
+func (d *LegacyDecoder) Read(p *ndb.Ping) error {
 	d.line++
 	line, err := d.r.ReadString('\n')
 	if err != nil {
@@ -97,10 +105,10 @@ func (d *LegacyDecoder) Read(p *netfix.Ping) error {
 	if err != nil {
 		return err
 	}
-	p.End = t
 
 	if strings.Contains(line, "unreachable") {
-		p.Start = p.End.Add(-time.Second)
+		p.Duration = time.Second
+		p.Start = t.Add(-p.Duration)
 		p.Timeout = true
 		return nil
 	}
@@ -111,7 +119,8 @@ func (d *LegacyDecoder) Read(p *netfix.Ping) error {
 		return err
 	} else {
 		p.Timeout = false
-		p.Start = p.End.Add(-duration)
+		p.Duration = duration
+		p.Start = t.Add(-p.Duration)
 	}
 	return nil
 }
