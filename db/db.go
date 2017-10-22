@@ -1,4 +1,4 @@
-package netfix
+package db
 
 import (
 	"database/sql"
