@@ -24,10 +24,20 @@ func TestPinger(t *testing.T) {
 			t.Fatal(err)
 		} else if err := p.Send(dst, req); err != nil {
 			t.Fatal(err)
-		} else if res, err := p.Receive(id); err != nil {
-			t.Fatal(err)
-		} else if !reflect.DeepEqual(req, res) {
-			t.Fatalf("\ngot =%s\nwant=%s", res, req)
+		}
+		for {
+			res, err := p.Receive()
+			if err != nil {
+				if !IsTemporary(err) {
+					t.Fatal(err)
+				}
+				continue
+			} else if res.ID != id {
+				continue
+			} else if !reflect.DeepEqual(req, res) {
+				t.Fatalf("\ngot =%s\nwant=%s", res, req)
+			}
+			break
 		}
 	}
 }
