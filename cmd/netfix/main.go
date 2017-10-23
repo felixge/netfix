@@ -39,7 +39,7 @@ func run() error {
 	errCh := make(chan error)
 
 	go func() { errCh <- serveHttp(c, db) }()
-	go func() { errCh <- runPings(c, db) }()
+	go func() { errCh <- recordPings(c, db) }()
 
 	for i := 0; i < 2; i++ {
 		if err := <-errCh; err != nil {

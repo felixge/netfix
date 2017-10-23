@@ -9,7 +9,7 @@ import (
 	"github.com/felixge/netfix/ping"
 )
 
-func runPings(c Config, db *sql.DB) error {
+func recordPings(c Config, db *sql.DB) error {
 	p, err := ping.NewPinger(ping.IPVersion(c.IPVersion))
 	if err != nil {
 		return err
