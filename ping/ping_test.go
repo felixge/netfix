@@ -3,7 +3,6 @@ package ping
 import (
 	"fmt"
 	"math/rand"
-	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -11,7 +10,7 @@ import (
 
 func TestPinger(t *testing.T) {
 	src := rand.NewSource(time.Now().Unix())
-	id := uint16(os.Getpid() & 0xffff)
+	id := ProcessID()
 	req := &Echo{
 		ID:   id,
 		Seq:  uint16(src.Int63()),

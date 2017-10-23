@@ -9,23 +9,29 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"time"
 
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 )
 
-type IPVersion int
+type IPVersion string
 
 const (
-	IPv4 IPVersion = iota
-	IPv6
+	IPv4 IPVersion = "4"
+	IPv6 IPVersion = "6"
 )
 
 const (
 	protocolICMP     = 1  // iana.ProtocolICMP
 	protocolIPv6ICMP = 58 // iana.ProtocolIPv6ICMP
 )
+
+func ProcessID() uint16 {
+	return uint16(os.Getpid() & 0xffff)
+}
 
 func NewPinger(ipv IPVersion) (*Pinger, error) {
 	var (
@@ -120,35 +126,55 @@ func (p *Pinger) Send(dst net.Addr, e *Echo) error {
 	return nil
 }
 
-func (p *Pinger) Receive(id uint16) (*Echo, error) {
-	for {
-		rb := make([]byte, 1500)
-		n, _, err := p.conn.ReadFrom(rb)
-		if err != nil {
-			return nil, err
-		}
-
-		rm, err := icmp.ParseMessage(p.protocol, rb[:n])
-		if err != nil {
-			return nil, err
-		}
-		switch rm.Type {
-		case ipv4.ICMPTypeEchoReply, ipv6.ICMPTypeEchoReply:
-			e := rm.Body.(*icmp.Echo)
-			if uint16(e.ID) != id {
-				continue
-			}
-			return &Echo{
-				ID:   uint16(e.ID),
-				Seq:  uint16(e.Seq),
-				Data: e.Data,
-			}, nil
-		default:
-			// For now we just ignore ipv4.ICMPTypeDestinationUnreachable,
-			// ipv6.ICMPTypeDestinationUnreachable etc. here. But in the future
-			// it might be worth to capture them.
-			continue
-		}
+func (p *Pinger) Receive() (*Echo, error) {
+	p.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	rb := make([]byte, 1500)
+	n, _, err := p.conn.ReadFrom(rb)
+	if err != nil {
+		return nil, err
 	}
-	return nil, nil
+
+	rm, err := icmp.ParseMessage(p.protocol, rb[:n])
+	if err != nil {
+		return nil, &TmpErr{err}
+	}
+	switch rm.Type {
+	case ipv4.ICMPTypeEchoReply, ipv6.ICMPTypeEchoReply:
+		e := rm.Body.(*icmp.Echo)
+		return &Echo{
+			ID:   uint16(e.ID),
+			Seq:  uint16(e.Seq),
+			Data: e.Data,
+		}, nil
+	default:
+		// e.g. ipv4.ICMPTypeDestinationUnreachable,
+		// ipv6.ICMPTypeDestinationUnreachable, etc.
+		return nil, &TmpErr{fmt.Errorf("non-reply response: %#v", rm)}
+	}
+}
+
+func (p *Pinger) Close() error {
+	return p.conn.Close()
+}
+
+type TmpErr struct {
+	error
+}
+
+func (t *TmpErr) Temporary() bool {
+	return true
+}
+
+func IsTemporary(err error) bool {
+	t, ok := err.(interface {
+		Temporary() bool
+	})
+	return ok && t.Temporary()
+}
+
+func IsTimeout(err error) bool {
+	t, ok := err.(interface {
+		Timeout() bool
+	})
+	return ok && t.Timeout()
 }
