@@ -50,33 +50,41 @@ func run() error {
 }
 
 func EnvConfig() (Config, error) {
-	c := Config{
-		DB:        os.Getenv("NF_DB"),
-		HttpAddr:  os.Getenv("NF_HTTP_ADDR"),
-		Target:    os.Getenv("NF_TARGET"),
-		IPVersion: os.Getenv("NF_IP_VERSION"),
-	}
-	if d, err := parseEnvDuration("NF_INTERVAL"); err != nil {
+	c := Config{}
+	if err := nonEmptyString("NF_DB", &c.DB); err != nil {
 		return c, err
-	} else {
-		c.Interval = d
-	}
-	if d, err := parseEnvDuration("NF_TIMEOUT"); err != nil {
+	} else if err := nonEmptyString("NF_HTTP_ADDR", &c.HttpAddr); err != nil {
 		return c, err
-	} else {
-		c.Timeout = d
+	} else if err := nonEmptyString("NF_TARGET", &c.Target); err != nil {
+		return c, err
+	} else if err := nonEmptyString("NF_IP_VERSION", &c.IPVersion); err != nil {
+		return c, err
+	} else if err := parseEnvDuration("NF_INTERVAL", &c.Interval); err != nil {
+		return c, err
+	} else if err := parseEnvDuration("NF_TIMEOUT", &c.Timeout); err != nil {
+		return c, err
 	}
-
 	return c, nil
 }
 
-func parseEnvDuration(envVar string) (time.Duration, error) {
+func nonEmptyString(envVar string, dst *string) error {
+	val := os.Getenv(envVar)
+	if val == "" {
+		return fmt.Errorf("%s: must not be empty", envVar)
+	}
+	*dst = val
+	return nil
+
+}
+
+func parseEnvDuration(envVar string, dst *time.Duration) error {
 	val := os.Getenv(envVar)
 	d, err := time.ParseDuration(val)
 	if err != nil {
-		return d, fmt.Errorf("%s: %s", envVar, err)
+		return fmt.Errorf("%s: %s", envVar, err)
 	}
-	return d, err
+	*dst = d
+	return nil
 }
 
 type Config struct {
