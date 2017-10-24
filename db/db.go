@@ -94,7 +94,10 @@ count_mins AS (
     count(case when pings.timeout = 1 then 1 else null end) AS lost,
     count(1) as total
   FROM timeout_mins
-  JOIN pings ON pings.start >= timeout_mins.start AND pings.start < timeout_mins.start + 60
+  JOIN pings ON 
+		pings.start >= timeout_mins.start
+		AND pings.start < timeout_mins.start + 60
+		AND pings.duration IS NOT NULL
   GROUP BY 1
 ),
 
@@ -231,14 +234,41 @@ func (p Ping) String() string {
 	)
 }
 
-func (p Ping) Insert(db DBOrTx) error {
-	const sql = `
-INSERT OR REPLACE INTO pings (start, duration, timeout)
+type InsertOr string
+
+const (
+	OrRollback InsertOr = "ROLLBACK"
+	OrAbort    InsertOr = "ABORT"
+	OrFail     InsertOr = "FAIL"
+	OrIgnore   InsertOr = "IGNORE"
+	OrReplace  InsertOr = "REPLACE"
+)
+
+func (p Ping) InsertOr(db DBOrTx, mode InsertOr) error {
+	sql := `
+INSERT OR ` + string(mode) + ` INTO pings (start, duration, timeout)
 VALUES ($1, $2, $3)
 `
 
-	start := float64(p.Start.UnixNano()) / float64(time.Second)
-	duration := float64(p.Duration.Nanoseconds()) / float64(time.Millisecond)
-	_, err := db.Exec(sql, start, duration, p.Timeout)
+	_, err := db.Exec(sql, p.sqlArgs()...)
 	return err
+}
+
+func (p Ping) Finalize(db DBOrTx) error {
+	// @TODO(fg) not sure why SET start = $1 is needed here, but without it the
+	// query fails. Might be something odd about how the go lib for sqlite3
+	// does placeholder variables.
+	const sql = `UPDATE pings SET start = $1, duration = $2, timeout = $3 WHERE start = $1 AND duration IS NULL;`
+	_, err := db.Exec(sql, p.sqlArgs()...)
+	return err
+}
+
+func (p Ping) sqlArgs() []interface{} {
+	start := float64(p.Start.UnixNano()) / float64(time.Second)
+	args := []interface{}{start, nil, p.Timeout}
+	duration := float64(p.Duration.Nanoseconds()) / float64(time.Millisecond)
+	if duration != 0 {
+		args[1] = duration
+	}
+	return args
 }

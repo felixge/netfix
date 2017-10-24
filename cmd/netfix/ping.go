@@ -6,6 +6,7 @@ import (
 	"net"
 	"time"
 
+	ndb "github.com/felixge/netfix/db"
 	"github.com/felixge/netfix/ping"
 )
 
@@ -20,55 +21,123 @@ func recordPings(c Config, db *sql.DB) error {
 	}
 	log.Printf("resolved %s to %s", c.Target, dst)
 
-	id := ping.ProcessID()
-	errCh := make(chan error)
-	stopCh := make(chan struct{})
-	go func() { errCh <- pingRoutine(p, c.Interval, dst, id, stopCh) }()
-	go func() { errCh <- receiveRoutine(p, id, stopCh) }()
+	var (
+		id     = ping.ProcessID()
+		errCh  = make(chan error)
+		stopCh = make(chan struct{})
+		pingCh = make(chan ndb.Ping)
 
-	return <-errCh
+		pr = &pingRoutine{
+			p:        p,
+			interval: c.Interval,
+			timeout:  c.Timeout,
+			dst:      dst,
+			id:       id,
+			pingCh:   pingCh,
+			stopCh:   stopCh,
+		}
+
+		rr = &receiveRoutine{
+			p:      p,
+			id:     id,
+			pingCh: pingCh,
+			stopCh: stopCh,
+		}
+
+		sr = &storeRoutine{
+			db:     db,
+			pingCh: pingCh,
+			stopCh: stopCh,
+		}
+	)
+
+	go func() { errCh <- pr.Run() }()
+	go func() { errCh <- rr.Run() }()
+	go func() { errCh <- sr.Run() }()
+
+	var firstErr error
+	for i := 0; i < 3; i++ {
+		if err := <-errCh; err != nil && firstErr == nil {
+			firstErr = err
+			close(stopCh)
+		}
+	}
+
+	return firstErr
 }
 
-func pingRoutine(p *ping.Pinger, interval time.Duration, dst net.Addr, id uint16, stopCh <-chan struct{}) error {
-	ticker := time.NewTicker(interval)
+type pingRoutine struct {
+	p        *ping.Pinger
+	interval time.Duration
+	timeout  time.Duration
+	dst      net.Addr
+	id       uint16
+	pingCh   chan<- ndb.Ping
+	stopCh   <-chan struct{}
+}
+
+func (p *pingRoutine) Run() error {
+	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 	for seq := uint16(0); ; seq++ {
 		start := time.Now()
 
 		echo := &ping.Echo{
-			ID:   id,
+			ID:   p.id,
 			Seq:  seq,
 			Data: []byte(start.Format(time.RFC3339Nano)),
 		}
-		if err := p.Send(dst, echo); err != nil {
+		if err := p.p.Send(p.dst, echo); err != nil {
 			return err
 		}
+		pg := ndb.Ping{Start: start}
+		select {
+		case p.pingCh <- pg:
+		case <-p.stopCh:
+			return nil
+		}
+		time.AfterFunc(p.timeout, func() {
+			pg.Duration = time.Since(start)
+			pg.Timeout = true
+			select {
+			case p.pingCh <- pg:
+			case <-p.stopCh:
+			}
+		})
+
 		select {
 		case <-ticker.C:
-		case <-stopCh:
+		case <-p.stopCh:
 			return nil
 		}
 	}
 	return nil
 }
 
-func receiveRoutine(p *ping.Pinger, id uint16, stopCh <-chan struct{}) error {
+type receiveRoutine struct {
+	p      *ping.Pinger
+	id     uint16
+	pingCh chan<- ndb.Ping
+	stopCh <-chan struct{}
+}
+
+func (r *receiveRoutine) Run() error {
 	for {
 		select {
-		case <-stopCh:
+		case <-r.stopCh:
 			return nil
 		default:
 		}
-		echo, err := p.Receive()
+		echo, err := r.p.Receive()
 		if err != nil {
 			if ping.IsTemporary(err) {
 				if !ping.IsTimeout(err) {
-					log.Printf("%s", err)
+					log.Printf("receive error: %s", err)
 				}
 				continue
 			}
 			return err
-		} else if echo.ID != id {
+		} else if echo.ID != r.id {
 			continue
 		}
 
@@ -77,6 +146,49 @@ func receiveRoutine(p *ping.Pinger, id uint16, stopCh <-chan struct{}) error {
 			return err
 		}
 		dt := time.Since(start)
-		log.Printf("%s - %s", echo, dt)
+		select {
+		case r.pingCh <- ndb.Ping{Start: start, Duration: dt}:
+		case <-r.stopCh:
+			return nil
+		default:
+		}
 	}
+}
+
+type storeRoutine struct {
+	db     *sql.DB
+	pingCh <-chan ndb.Ping
+	stopCh <-chan struct{}
+}
+
+func (s *storeRoutine) Run() error {
+	for {
+		select {
+		case <-s.stopCh:
+			return nil
+		case pg := <-s.pingCh:
+			if pg.Duration == 0 {
+				if err := pg.InsertOr(s.db, ndb.OrAbort); err != nil {
+					return err
+				}
+			} else {
+				if err := pg.Finalize(s.db); err != nil {
+					return err
+				}
+			}
+		}
+	}
+}
+
+func store(db *sql.DB, pg ndb.Ping) error {
+	if pg.Duration == 0 {
+		if err := pg.InsertOr(db, ndb.OrAbort); err != nil {
+			return err
+		}
+	} else {
+		if err := pg.Finalize(db); err != nil {
+			return err
+		}
+	}
+	return nil
 }
