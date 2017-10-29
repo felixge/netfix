@@ -6,11 +6,12 @@ import (
 	"net"
 	"time"
 
-	ndb "github.com/felixge/netfix/db"
+	"github.com/felixge/netfix"
+	"github.com/felixge/netfix/pg"
 	"github.com/felixge/netfix/ping"
 )
 
-func recordPings(c Config, db *sql.DB) error {
+func recordPings(c netfix.Config, db *sql.DB) error {
 	p, err := ping.NewPinger(ping.IPVersion(c.IPVersion))
 	if err != nil {
 		return err
@@ -25,7 +26,7 @@ func recordPings(c Config, db *sql.DB) error {
 		id     = ping.ProcessID()
 		errCh  = make(chan error)
 		stopCh = make(chan struct{})
-		pingCh = make(chan ndb.Ping)
+		pingCh = make(chan pg.Ping)
 
 		pr = &pingRoutine{
 			p:        p,
@@ -72,42 +73,42 @@ type pingRoutine struct {
 	timeout  time.Duration
 	dst      net.Addr
 	id       uint16
-	pingCh   chan<- ndb.Ping
+	pingCh   chan<- pg.Ping
 	stopCh   <-chan struct{}
 }
 
-func (p *pingRoutine) Run() error {
-	ticker := time.NewTicker(p.interval)
+func (pr *pingRoutine) Run() error {
+	ticker := time.NewTicker(pr.interval)
 	defer ticker.Stop()
 	for seq := uint16(0); ; seq++ {
 		start := time.Now()
 
 		echo := &ping.Echo{
-			ID:   p.id,
+			ID:   pr.id,
 			Seq:  seq,
 			Data: []byte(start.Format(time.RFC3339Nano)),
 		}
-		if err := p.p.Send(p.dst, echo); err != nil {
+		if err := pr.p.Send(pr.dst, echo); err != nil {
 			return err
 		}
-		pg := ndb.Ping{Start: start}
+		p := pg.Ping{Start: start}
 		select {
-		case p.pingCh <- pg:
-		case <-p.stopCh:
+		case pr.pingCh <- p:
+		case <-pr.stopCh:
 			return nil
 		}
-		time.AfterFunc(p.timeout, func() {
-			pg.Duration = time.Since(start)
-			pg.Timeout = true
+		time.AfterFunc(pr.timeout, func() {
+			p.Duration = time.Since(start)
+			p.Timeout = true
 			select {
-			case p.pingCh <- pg:
-			case <-p.stopCh:
+			case pr.pingCh <- p:
+			case <-pr.stopCh:
 			}
 		})
 
 		select {
 		case <-ticker.C:
-		case <-p.stopCh:
+		case <-pr.stopCh:
 			return nil
 		}
 	}
@@ -117,7 +118,7 @@ func (p *pingRoutine) Run() error {
 type receiveRoutine struct {
 	p      *ping.Pinger
 	id     uint16
-	pingCh chan<- ndb.Ping
+	pingCh chan<- pg.Ping
 	stopCh <-chan struct{}
 }
 
@@ -147,7 +148,7 @@ func (r *receiveRoutine) Run() error {
 		}
 		dt := time.Since(start)
 		select {
-		case r.pingCh <- ndb.Ping{Start: start, Duration: dt}:
+		case r.pingCh <- pg.Ping{Start: start, Duration: dt}:
 		case <-r.stopCh:
 			return nil
 		default:
@@ -157,7 +158,7 @@ func (r *receiveRoutine) Run() error {
 
 type storeRoutine struct {
 	db     *sql.DB
-	pingCh <-chan ndb.Ping
+	pingCh <-chan pg.Ping
 	stopCh <-chan struct{}
 }
 
@@ -166,29 +167,23 @@ func (s *storeRoutine) Run() error {
 		select {
 		case <-s.stopCh:
 			return nil
-		case pg := <-s.pingCh:
-			if pg.Duration == 0 {
-				if err := pg.InsertOr(s.db, ndb.OrAbort); err != nil {
-					return err
-				}
-			} else {
-				if err := pg.Finalize(s.db); err != nil {
-					return err
-				}
+		case p := <-s.pingCh:
+			sql := `
+INSERT INTO pings (started, duration_ms, timeout)
+VALUES ($1, $2, $3)
+ON CONFLICT (started) DO UPDATE
+SET
+	duration_ms = EXCLUDED.duration_ms,
+	timeout = EXCLUDED.timeout
+WHERE pings.duration_ms IS NULL;
+`
+			var duration interface{}
+			if p.Duration > 0 {
+				duration = float64(p.Duration.Nanoseconds()) / float64(time.Millisecond)
+			}
+			if _, err := s.db.Exec(sql, p.Start, duration, p.Timeout); err != nil {
+				return err
 			}
 		}
 	}
-}
-
-func store(db *sql.DB, pg ndb.Ping) error {
-	if pg.Duration == 0 {
-		if err := pg.InsertOr(db, ndb.OrAbort); err != nil {
-			return err
-		}
-	} else {
-		if err := pg.Finalize(db); err != nil {
-			return err
-		}
-	}
-	return nil
 }

@@ -1,0 +1,142 @@
+package main
+
+import (
+	"bufio"
+	"database/sql"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"regexp"
+	"strings"
+	"time"
+
+	ndb "github.com/felixge/netfix/db"
+)
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	if len(os.Args) != 3 {
+		return errors.New("usage: nfconv <legacy_file> <nf_db>")
+	}
+
+	db, err := ndb.Open(os.Args[2])
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if from, to, err := ndb.Migrate(db); err != nil {
+		return err
+	} else if from != to {
+		log.Printf("db: migrated from version %d to %d", from, to)
+	}
+	if stats, err := Convert(os.Args[1], db); err != nil {
+		return err
+	} else {
+		fmt.Printf("%s\n", stats)
+	}
+	return nil
+}
+
+func Convert(legacyFile string, db *sql.DB) (Stats, error) {
+	stats := Stats{Start: time.Now()}
+	lf, err := os.Open(legacyFile)
+	if err != nil {
+		return stats, err
+	}
+	defer lf.Close()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return stats, err
+	}
+	defer tx.Rollback()
+
+	var (
+		ld = NewLegacyDecoder(lf)
+		p  = &ndb.Ping{}
+	)
+
+	for stats.Lines = 1; ; stats.Lines++ {
+		if err := ld.Read(p); err == io.EOF {
+			break
+		} else if err != nil {
+			stats.Errors++
+			continue
+		} else if p.Timeout {
+			stats.Timeouts++
+		}
+		if err := p.Insert(tx); err != nil {
+			return stats, err
+		}
+	}
+	return stats, tx.Commit()
+}
+
+func NewLegacyDecoder(r io.Reader) *LegacyDecoder {
+	return &LegacyDecoder{r: bufio.NewReader(r)}
+}
+
+type LegacyDecoder struct {
+	line int
+	r    *bufio.Reader
+}
+
+var durationPattern = regexp.MustCompile("time=([0-9.]+) ([a-z]+)")
+
+func (d *LegacyDecoder) Read(p *ndb.Ping) error {
+	d.line++
+	line, err := d.r.ReadString('\n')
+	if err != nil {
+		return err
+	}
+
+	ts := line[0:19]
+	t, err := time.ParseInLocation("2006/01/02 15:04:05", ts, time.Local)
+	if err != nil {
+		return err
+	}
+
+	if strings.Contains(line, "unreachable") {
+		p.Duration = time.Second
+		p.Start = t.Add(-p.Duration)
+		p.Timeout = true
+		return nil
+	}
+	m := durationPattern.FindStringSubmatch(line)
+	if len(m) != 3 {
+		return fmt.Errorf("bad time on line: %d: %s", d.line, line)
+	} else if duration, err := time.ParseDuration(m[1] + m[2]); err != nil {
+		return err
+	} else {
+		p.Timeout = false
+		p.Duration = duration
+		p.Start = t.Add(-p.Duration)
+	}
+	return nil
+}
+
+type Stats struct {
+	Start    time.Time
+	Timeouts int
+	Lines    int
+	Errors   int
+}
+
+func (s Stats) String() string {
+	return fmt.Sprintf(
+		"lines: %d\ntimeouts: %d\nerrors: %d\nduration: %s",
+		s.Lines,
+		s.Timeouts,
+		s.Errors,
+		time.Since(s.Start),
+	)
+}

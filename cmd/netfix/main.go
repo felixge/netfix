@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	ndb "github.com/felixge/netfix/db"
+	"github.com/felixge/netfix"
 )
 
 // version is populated by the Makefile
@@ -19,19 +19,15 @@ func main() {
 }
 
 func run() error {
-	c, err := EnvConfig()
+	c, err := netfix.EnvConfig()
 	if err != nil {
 		return err
 	}
 	log.SetOutput(os.Stdout)
 	log.Printf("Starting up netfix version=%s config=%s", version, c)
-	db, err := ndb.Open(c.DB)
+	db, err := c.DB.Open()
 	if err != nil {
 		return err
-	} else if from, to, err := ndb.Migrate(db); err != nil {
-		return err
-	} else if from != to {
-		log.Printf("db: migrated from version %d to %d", from, to)
 	}
 
 	errCh := make(chan error)
