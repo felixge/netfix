@@ -4,22 +4,18 @@ import (
 	"database/sql"
 	"testing"
 
-	ndb "github.com/felixge/netfix/db"
+	"github.com/felixge/netfix"
 )
 
 func TestConvert(t *testing.T) {
-	db, err := ndb.Open("")
-	if err != nil {
-		t.Fatal(err)
-	} else if _, _, err := ndb.Migrate(db); err != nil {
-		t.Fatal(err)
-	} else if _, err := Convert("test-fixtures/dupe.txt", db); err != nil {
+	db := netfix.TestConfig(t).DB.OpenTest(t)
+	if _, err := Convert("test-fixtures/dupe.txt", db); err != nil {
 		t.Fatal(err)
 	}
 
 	checkCount(t, db, "SELECT count(*) FROM pings", 2)
-	checkCount(t, db, "SELECT count(*) FROM pings WHERE timeout = 1", 1)
-	checkCount(t, db, "SELECT count(*) FROM pings WHERE timeout = 0", 1)
+	checkCount(t, db, "SELECT count(*) FROM pings WHERE timeout = true", 1)
+	checkCount(t, db, "SELECT count(*) FROM pings WHERE timeout = false", 1)
 }
 
 func checkCount(t *testing.T, db *sql.DB, sql string, want int) {

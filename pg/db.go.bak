@@ -1,0 +1,155 @@
+package db
+
+import (
+	"database/sql"
+	"fmt"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/lib/pq"
+	"github.com/pkg/errors"
+)
+
+type Config struct {
+	Host    string
+	Port    string
+	User    string
+	Pass    string
+	DB      string
+	AppName string
+	Extra   string
+	Schemas []string
+}
+
+func (c Config) Open() (*sql.DB, error) {
+	dsn := fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s application_name=%s %s",
+		c.Host,
+		c.Port,
+		c.User,
+		c.Pass,
+		c.DB,
+		c.AppName,
+		c.Extra,
+	)
+
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, err
+	} else if err := setSearchPath(db, c.Schemas); err != nil {
+		return nil, err
+	} else {
+		return db, nil
+	}
+}
+
+// setSearchPath alters the default search_path of the current database to the
+// given schemas.
+func setSearchPath(db *sql.DB, schemas []string) error {
+	dbName, err := currentDB(db)
+	if err != nil {
+		return err
+	}
+	setSP := `SET search_path TO ` + strings.Join(quoteIdentifiers(schemas), ",")
+	sql := setSP + `; ALTER DATABASE ` + pq.QuoteIdentifier(dbName) + setSP
+	_, err = db.Exec(sql)
+	return err
+}
+
+func quoteIdentifiers(s []string) []string {
+	quoted := make([]string, len(s))
+	for i, _ := range s {
+		quoted[i] = pq.QuoteIdentifier(s[i])
+	}
+	return quoted
+}
+
+// currentDB returns the name of the current db. This is useful for queries
+// where expressions can't be used.
+func currentDB(db *sql.DB) (string, error) {
+	var currentDB string
+	row := db.QueryRow("SELECT current_database()")
+	if err := row.Scan(&currentDB); err != nil {
+		return "", err
+	}
+	return currentDB, nil
+}
+
+func Migrate(db *sql.DB) error {
+	return migrate(db, false)
+}
+
+func migrate(db *sql.DB, clean bool) error {
+	var args []string
+	if clean {
+		args = append(args, "clean")
+	}
+	args = append(args, "migrate")
+
+	cmd := exec.Command("flyway.sh", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return errors.Wrap(err, string(out))
+	}
+	return nil
+
+}
+
+type DBOrTx interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
+type Ping struct {
+	Start    time.Time
+	Duration time.Duration
+	Timeout  bool
+}
+
+func (p Ping) String() string {
+	return fmt.Sprintf(
+		"start=%s duration=%s timeout=%t",
+		p.Start,
+		p.Duration,
+		p.Timeout,
+	)
+}
+
+type InsertOr string
+
+const (
+	OrRollback InsertOr = "ROLLBACK"
+	OrAbort    InsertOr = "ABORT"
+	OrFail     InsertOr = "FAIL"
+	OrIgnore   InsertOr = "IGNORE"
+	OrReplace  InsertOr = "REPLACE"
+)
+
+func (p Ping) InsertOr(db DBOrTx, mode InsertOr) error {
+	sql := `
+INSERT OR ` + string(mode) + ` INTO pings (start, duration, timeout)
+VALUES ($1, $2, $3)
+`
+
+	_, err := db.Exec(sql, p.sqlArgs()...)
+	return err
+}
+
+func (p Ping) Finalize(db DBOrTx) error {
+	// @TODO(fg) not sure why SET start = $1 is needed here, but without it the
+	// query fails. Might be something odd about how the go lib for sqlite3
+	// does placeholder variables.
+	const sql = `UPDATE pings SET start = $1, duration = $2, timeout = $3 WHERE start = $1 AND duration IS NULL;`
+	_, err := db.Exec(sql, p.sqlArgs()...)
+	return err
+}
+
+func (p Ping) sqlArgs() []interface{} {
+	start := float64(p.Start.UnixNano()) / float64(time.Second)
+	args := []interface{}{start, nil, p.Timeout}
+	duration := float64(p.Duration.Nanoseconds()) / float64(time.Millisecond)
+	if duration != 0 {
+		args[1] = duration
+	}
+	return args
+}

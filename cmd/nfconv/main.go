@@ -12,8 +12,9 @@ import (
 	"strings"
 	"time"
 
-	ndb "github.com/felixge/netfix/db"
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/felixge/netfix"
+	"github.com/felixge/netfix/pg"
+	"github.com/lib/pq"
 )
 
 func main() {
@@ -24,21 +25,20 @@ func main() {
 }
 
 func run() error {
-	if len(os.Args) != 3 {
-		return errors.New("usage: nfconv <legacy_file> <nf_db>")
+	if len(os.Args) != 2 {
+		return errors.New("usage: nfconv <legacy_file>")
 	}
 
-	db, err := ndb.Open(os.Args[2])
+	c, err := netfix.EnvConfig()
 	if err != nil {
 		return err
 	}
-	defer db.Close()
 
-	if from, to, err := ndb.Migrate(db); err != nil {
+	db, err := c.DB.Open()
+	if err != nil {
 		return err
-	} else if from != to {
-		log.Printf("db: migrated from version %d to %d", from, to)
 	}
+
 	if stats, err := Convert(os.Args[1], db); err != nil {
 		return err
 	} else {
@@ -61,24 +61,47 @@ func Convert(legacyFile string, db *sql.DB) (Stats, error) {
 	}
 	defer tx.Rollback()
 
+	stmt, err := tx.Prepare(pq.CopyIn("pings", "started", "duration_ms", "timeout"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer stmt.Close()
+
 	var (
 		ld = NewLegacyDecoder(lf)
-		p  = &ndb.Ping{}
+		p  = &pg.Ping{}
 	)
 
+	var prevStart time.Time
 	for stats.Lines = 1; ; stats.Lines++ {
 		if err := ld.Read(p); err == io.EOF {
 			break
 		} else if err != nil {
 			stats.Errors++
 			continue
+		} else if p.Start.Equal(prevStart) {
+			stats.Dupes++
+			continue
 		} else if p.Timeout {
 			stats.Timeouts++
 		}
-		if err := p.Insert(tx); err != nil {
+		args := []interface{}{
+			p.Start,
+			float64(p.Duration.Nanoseconds()) / float64(time.Millisecond),
+			p.Timeout,
+		}
+		if _, err := stmt.Exec(args...); err != nil {
 			return stats, err
 		}
+		prevStart = p.Start
 	}
+
+	if _, err := stmt.Exec(); err != nil {
+		return stats, err
+	} else if err := stmt.Close(); err != nil {
+		return stats, err
+	}
+
 	return stats, tx.Commit()
 }
 
@@ -93,7 +116,7 @@ type LegacyDecoder struct {
 
 var durationPattern = regexp.MustCompile("time=([0-9.]+) ([a-z]+)")
 
-func (d *LegacyDecoder) Read(p *ndb.Ping) error {
+func (d *LegacyDecoder) Read(p *pg.Ping) error {
 	d.line++
 	line, err := d.r.ReadString('\n')
 	if err != nil {
@@ -128,15 +151,17 @@ func (d *LegacyDecoder) Read(p *ndb.Ping) error {
 type Stats struct {
 	Start    time.Time
 	Timeouts int
+	Dupes    int
 	Lines    int
 	Errors   int
 }
 
 func (s Stats) String() string {
 	return fmt.Sprintf(
-		"lines: %d\ntimeouts: %d\nerrors: %d\nduration: %s",
+		"lines: %d\ntimeouts: %d\ndupes: %d\nerrors: %d\nduration: %s",
 		s.Lines,
 		s.Timeouts,
+		s.Dupes,
 		s.Errors,
 		time.Since(s.Start),
 	)

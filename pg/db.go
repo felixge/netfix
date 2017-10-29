@@ -1,65 +1,117 @@
-package db
+package pg
 
 import (
 	"database/sql"
 	"fmt"
+	"os/exec"
+	"strings"
+	"testing"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/lib/pq"
+	"github.com/pkg/errors"
 )
 
-func Open(dsn string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", dsn)
-	if err != nil {
-		return nil, err
-	} else if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		return nil, err
-	}
-
-	return db, nil
+type Config struct {
+	Host    string
+	Port    string
+	User    string
+	Pass    string
+	DB      string
+	SSLMode string
+	AppName string
+	Extra   string
+	Schemas []string
 }
 
-func Migrate(db *sql.DB) (from, to int, err error) {
-	tx, err := db.Begin()
+func (c Config) Open() (*sql.DB, error) {
+	return c.open(false)
+}
+
+func (c Config) OpenTest(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := c.open(true)
 	if err != nil {
-		return 0, 0, err
+		t.Fatal(err)
 	}
-	defer tx.Rollback()
+	return db
+}
 
-	migrations := []func() error{
-		func() error {
-			_, err = tx.Exec(`
-CREATE TABLE schema_versions (
-	version int
-);
+func (c Config) open(migrateClean bool) (*sql.DB, error) {
+	dsn := fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s application_name=%s %s",
+		c.Host,
+		c.Port,
+		c.User,
+		c.Pass,
+		c.DB,
+		c.AppName,
+		c.Extra,
+	)
 
-CREATE TABLE pings (
-	start REAL PRIMARY KEY,
-	duration REAL,
-	timeout bool
-);`,
-			)
-			return err
-		},
-		func() error {
-			_, err = tx.Exec(`CREATE INDEX pings_timeout_idx ON pings(timeout);`)
-			return err
-		},
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, errors.Wrap(err, "open db")
+	} else if err := migrate(db, migrateClean); err != nil {
+		return nil, errors.Wrap(err, "open db")
+	} else if err := setSearchPath(db, c.Schemas); err != nil {
+		return nil, errors.Wrap(err, "open db")
+	} else {
+		return db, nil
 	}
+}
 
-	_ = tx.QueryRow("SELECT max(version) FROM schema_versions").Scan(&from)
-	if from > len(migrations) {
-		return 0, 0, fmt.Errorf("unknown schema_version: %d", from)
+// setSearchPath alters the default search_path of the current database to the
+// given schemas.
+func setSearchPath(db *sql.DB, schemas []string) error {
+	dbName, err := currentDB(db)
+	if err != nil {
+		return errors.Wrap(err, "set search_path")
 	}
-	for i, mig := range migrations[from:] {
-		if err := mig(); err != nil {
-			return 0, 0, err
-		} else if _, err := tx.Exec("INSERT INTO schema_versions VALUES ($1);", i+from+1); err != nil {
-			return 0, 0, err
-		}
+	setSP := `SET search_path TO ` + strings.Join(quoteIdentifiers(schemas), ",")
+	sql := setSP + `; ALTER DATABASE ` + pq.QuoteIdentifier(dbName) + setSP
+	_, err = db.Exec(sql)
+	err = errors.Wrap(err, "set search_path")
+	return err
+}
+
+func quoteIdentifiers(s []string) []string {
+	quoted := make([]string, len(s))
+	for i, _ := range s {
+		quoted[i] = pq.QuoteIdentifier(s[i])
 	}
-	to = len(migrations)
-	return from, to, tx.Commit()
+	return quoted
+}
+
+// currentDB returns the name of the current db. This is useful for queries
+// where expressions can't be used.
+func currentDB(db *sql.DB) (string, error) {
+	var currentDB string
+	row := db.QueryRow("SELECT current_database()")
+	if err := row.Scan(&currentDB); err != nil {
+		return "", errors.Wrap(err, "current db")
+	}
+	return currentDB, nil
+}
+
+//func Migrate(db *sql.DB) error {
+//return migrate(db, false)
+//}
+
+func migrate(db *sql.DB, clean bool) error {
+	var args []string
+	if clean {
+		args = append(args, "clean")
+	}
+	args = append(args, "migrate")
+
+	cmd := exec.Command("flyway.sh", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return errors.Wrap(err, "migrate: "+string(out))
+	}
+	return nil
+
 }
 
 type OutageFilter struct {
@@ -234,20 +286,11 @@ func (p Ping) String() string {
 	)
 }
 
-type InsertOr string
-
-const (
-	OrRollback InsertOr = "ROLLBACK"
-	OrAbort    InsertOr = "ABORT"
-	OrFail     InsertOr = "FAIL"
-	OrIgnore   InsertOr = "IGNORE"
-	OrReplace  InsertOr = "REPLACE"
-)
-
-func (p Ping) InsertOr(db DBOrTx, mode InsertOr) error {
+func (p Ping) InsertOrIgnore(db DBOrTx) error {
 	sql := `
-INSERT OR ` + string(mode) + ` INTO pings (start, duration, timeout)
+INSERT INTO pings (started, duration_ms, timeout)
 VALUES ($1, $2, $3)
+ON CONFLICT (started) DO NOTHING;
 `
 
 	_, err := db.Exec(sql, p.sqlArgs()...)
@@ -264,8 +307,7 @@ func (p Ping) Finalize(db DBOrTx) error {
 }
 
 func (p Ping) sqlArgs() []interface{} {
-	start := float64(p.Start.UnixNano()) / float64(time.Second)
-	args := []interface{}{start, nil, p.Timeout}
+	args := []interface{}{p.Start, nil, p.Timeout}
 	duration := float64(p.Duration.Nanoseconds()) / float64(time.Millisecond)
 	if duration != 0 {
 		args[1] = duration
