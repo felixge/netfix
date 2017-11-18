@@ -10,17 +10,18 @@ import (
 
 func TestPinger(t *testing.T) {
 	src := rand.NewSource(time.Now().Unix())
-	id := ProcessID()
-	req := &Echo{
-		ID:   id,
-		Seq:  uint16(src.Int63()),
-		Data: []byte(fmt.Sprintf("%d", src.Int63())),
-	}
 	for _, ipv := range []IPVersion{IPv4, IPv6} {
 		p, err := NewPinger(ipv)
 		if err != nil {
 			t.Fatal(err)
-		} else if dst, err := p.Resolve("google.com"); err != nil {
+		}
+		id := p.ID()
+		req := &Echo{
+			ID:   id,
+			Seq:  uint16(src.Int63()),
+			Data: []byte(fmt.Sprintf("%d", src.Int63())),
+		}
+		if dst, err := p.Resolve("google.com"); err != nil {
 			t.Fatal(err)
 		} else if err := p.Send(dst, req); err != nil {
 			t.Fatal(err)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"net"
 	"time"
@@ -23,7 +24,7 @@ func recordPings(c netfix.Config, db *sql.DB) error {
 	log.Printf("resolved %s to %s", c.Target, dst)
 
 	var (
-		id     = ping.ProcessID()
+		id     = p.ID()
 		errCh  = make(chan error)
 		stopCh = make(chan struct{})
 		pingCh = make(chan pg.Ping)

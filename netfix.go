@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/felixge/netfix/pg"
+	"github.com/hashicorp/go-multierror"
 )
 
 func TestConfig(t *testing.T) Config {
@@ -26,30 +27,41 @@ func EnvConfig() (Config, error) {
 		Extra: os.Getenv("NF_PGEXTRA"),
 	}}
 
+	var result *multierror.Error
 	if err := nonEmptyString("PGHOST", &c.DB.Host); err != nil {
-		return c, err
-	} else if err := nonEmptyString("PGPORT", &c.DB.Port); err != nil {
-		return c, err
-	} else if err := nonEmptyString("PGUSER", &c.DB.User); err != nil {
-		return c, err
-	} else if err := nonEmptyString("PGDATABASE", &c.DB.DB); err != nil {
-		return c, err
-	} else if err := nonEmptyString("PGSSLMODE", &c.DB.SSLMode); err != nil {
-		return c, err
-	} else if err := nonEmptyStringSlice("NF_PGSCHEMAS", &c.DB.Schemas); err != nil {
-		return c, err
-	} else if err := nonEmptyString("NF_HTTP_ADDR", &c.HttpAddr); err != nil {
-		return c, err
-	} else if err := nonEmptyString("NF_TARGET", &c.Target); err != nil {
-		return c, err
-	} else if err := nonEmptyString("NF_IP_VERSION", &c.IPVersion); err != nil {
-		return c, err
-	} else if err := parseEnvDuration("NF_INTERVAL", &c.Interval); err != nil {
-		return c, err
-	} else if err := parseEnvDuration("NF_TIMEOUT", &c.Timeout); err != nil {
-		return c, err
+		result = multierror.Append(err, result)
 	}
-	return c, nil
+	if err := nonEmptyString("PGPORT", &c.DB.Port); err != nil {
+		result = multierror.Append(err, result)
+	}
+	if err := nonEmptyString("PGUSER", &c.DB.User); err != nil {
+		result = multierror.Append(err, result)
+	}
+	if err := nonEmptyString("PGDATABASE", &c.DB.DB); err != nil {
+		result = multierror.Append(err, result)
+	}
+	if err := nonEmptyString("PGSSLMODE", &c.DB.SSLMode); err != nil {
+		result = multierror.Append(err, result)
+	}
+	if err := nonEmptyStringSlice("NF_PGSCHEMAS", &c.DB.Schemas); err != nil {
+		result = multierror.Append(err, result)
+	}
+	if err := nonEmptyString("NF_HTTP_ADDR", &c.HttpAddr); err != nil {
+		result = multierror.Append(err, result)
+	}
+	if err := nonEmptyString("NF_TARGET", &c.Target); err != nil {
+		result = multierror.Append(err, result)
+	}
+	if err := nonEmptyString("NF_IP_VERSION", &c.IPVersion); err != nil {
+		result = multierror.Append(err, result)
+	}
+	if err := parseEnvDuration("NF_INTERVAL", &c.Interval); err != nil {
+		result = multierror.Append(err, result)
+	}
+	if err := parseEnvDuration("NF_TIMEOUT", &c.Timeout); err != nil {
+		result = multierror.Append(err, result)
+	}
+	return c, result.ErrorOrNil()
 }
 
 func nonEmptyString(envVar string, dst *string) error {

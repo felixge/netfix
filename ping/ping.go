@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"time"
 
+	"github.com/pkg/errors"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -28,10 +28,6 @@ const (
 	protocolICMP     = 1  // iana.ProtocolICMP
 	protocolIPv6ICMP = 58 // iana.ProtocolIPv6ICMP
 )
-
-func ProcessID() uint16 {
-	return uint16(os.Getpid() & 0xffff)
-}
 
 func NewPinger(ipv IPVersion) (*Pinger, error) {
 	var (
@@ -54,7 +50,7 @@ func NewPinger(ipv IPVersion) (*Pinger, error) {
 
 	c, err := icmp.ListenPacket(network, "")
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "ping: listen")
 	}
 	p.conn = c
 	return p, nil
