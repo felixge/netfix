@@ -148,11 +148,11 @@ func (r *receiveRoutine) Run() error {
 			return err
 		}
 		dt := time.Since(start)
+		fmt.Printf("%s - %s\n", echo, dt)
 		select {
 		case r.pingCh <- pg.Ping{Start: start, Duration: dt}:
 		case <-r.stopCh:
 			return nil
-		default:
 		}
 	}
 }
