@@ -1,6 +1,5 @@
 VERSION:= $(shell git describe --tags --dirty --always)
 BINS := $(addprefix bin/,$(shell ls cmd))
-GOTAGS := json1
 
 .PHONY: bins
 bins: $(BINS)
@@ -8,7 +7,6 @@ bins: $(BINS)
 .PHONY: $(BINS)
 $(BINS): bin
 	 go build \
-		 -tags "$(GOTAGS)" \
 		 -i \
 		 -v \
 		 -o $@ \

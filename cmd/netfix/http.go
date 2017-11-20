@@ -2,20 +2,20 @@ package main
 
 import (
 	"database/sql"
+	"net"
 	"net/http"
 	"time"
 
 	"github.com/felixge/netfix"
 )
 
-func serveHttp(c netfix.Config, db *sql.DB) error {
+func serveHttp(c netfix.Config, ln net.Listener, db *sql.DB) error {
 	server := &http.Server{
-		Addr:         c.HttpAddr,
 		Handler:      OutagesHandler(db),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
-	return server.ListenAndServe()
+	return server.Serve(ln)
 }
 
 func OutagesHandler(db *sql.DB) http.Handler {
