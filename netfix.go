@@ -49,6 +49,9 @@ func EnvConfig() (Config, error) {
 	if err := nonEmptyString("NF_HTTP_ADDR", &c.HttpAddr); err != nil {
 		result = multierror.Append(err, result)
 	}
+	if err := nonEmptyString("NF_HTTP_DIR", &c.HttpDir); err != nil {
+		result = multierror.Append(err, result)
+	}
 	if err := nonEmptyString("NF_TARGET", &c.Target); err != nil {
 		result = multierror.Append(err, result)
 	}
@@ -100,6 +103,7 @@ func parseEnvDuration(envVar string, dst *time.Duration) error {
 type Config struct {
 	DB        pg.Config
 	HttpAddr  string
+	HttpDir   string
 	Target    string
 	IPVersion string
 	Interval  time.Duration

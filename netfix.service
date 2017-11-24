@@ -1,0 +1,11 @@
+[Unit]
+Description=netfix
+
+[Service]
+Type=notify
+ExecStart=/bin/bash -c 'source /etc/netfix.sh && exec netfix'
+#WatchdogSec=3s
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

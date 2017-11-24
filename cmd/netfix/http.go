@@ -2,54 +2,70 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"net"
 	"net/http"
 	"time"
 
 	"github.com/felixge/netfix"
+	"github.com/julienschmidt/httprouter"
 )
 
 func serveHttp(c netfix.Config, ln net.Listener, db *sql.DB) error {
+	h := &Handlers{DB: db}
+
+	router := httprouter.New()
+	router.GET("/api/heatmap", h.Heatmap)
+	router.NotFound = http.FileServer(http.Dir(c.HttpDir))
+
 	server := &http.Server{
-		Handler:      OutagesHandler(db),
+		Handler:      router,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
 	return server.Serve(ln)
 }
 
-func OutagesHandler(db *sql.DB) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+type Handlers struct {
+	DB *sql.DB
+}
+
+func (h *Handlers) Heatmap(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	// ?start=xxx&end=xxx&interval=xxx&max_duration=xxx
+	sql := `
+SELECT json_agg(heatmap ORDER BY time DESC, duration DESC)
+FROM (
+	SELECT
+		date_trunc($3::text, started) AS time,
+		-- TODO: Is there a more elegant way to do this?
+		ceil(duration_ms/10^floor(log(duration_ms)))*10^floor(log(duration_ms)) AS duration,
+		count(*) AS count
+	FROM (
+		SELECT started, least(duration_ms, $4::numeric) AS duration_ms
+		FROM pings
+		WHERE
+			started >= $1
+			AND started < $2
+			-- TODO(fg) compute duration for pings pending response?
+			AND duration_ms IS NOT NULL
+	) pings
+	GROUP BY 1, 2
+) heatmap;
+`
+
+	q := r.URL.Query()
+	var response []byte
+	row := h.DB.QueryRow(
+		sql,
+		q.Get("start"),
+		q.Get("end"),
+		q.Get("interval"),
+		q.Get("max_duration"),
+	)
+	if err := row.Scan(&response); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "%s", err)
 		return
-		//f := ndb.OutageFilter{
-		//MinLoss:        0.01,
-		//OutageLoss:     0.01,
-		//OutageDuration: 2 * time.Minute,
-		//OutageGap:      5 * time.Minute,
-		//}
-		//fmt.Sscan(r.URL.Query().Get("min_loss"), &f.MinLoss)
-		//fmt.Sscan(r.URL.Query().Get("outage_loss"), &f.OutageLoss)
-		//if d, err := time.ParseDuration(r.URL.Query().Get("outage_duration")); err == nil {
-		//f.OutageDuration = d
-		//}
-		//if d, err := time.ParseDuration(r.URL.Query().Get("outage_gap")); err == nil {
-		//f.OutageGap = d
-		//}
-
-		//outages, err := ndb.Outages(db, f)
-		//if err != nil {
-		//w.WriteHeader(http.StatusInternalServerError)
-		//fmt.Fprintf(w, "%s\n", err)
-		//return
-		//}
-
-		//fmt.Fprintf(w, "%s\n", f)
-		//fmt.Fprintf(w, "%d outages (%s):\n\n", len(outages), outages.Duration())
-		//sort.Slice(outages, func(i, j int) bool {
-		//return outages[i].Start.After(outages[j].Start)
-		//})
-		//for _, o := range outages {
-		//fmt.Fprintf(w, "%s\n", o)
-		//}
-	})
+	}
+	w.Write(response)
 }

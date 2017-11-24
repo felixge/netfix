@@ -52,9 +52,13 @@ func (c Config) open(migrateClean bool) (*sql.DB, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, errors.Wrap(err, "open db")
-	} else if err := migrate(db, migrateClean); err != nil {
-		return nil, errors.Wrap(err, "open db")
-	} else if err := setSearchPath(db, c.Schemas); err != nil {
+	}
+	if migrateClean {
+		if err := migrate(db); err != nil {
+			return nil, errors.Wrap(err, "open db")
+		}
+	}
+	if err := setSearchPath(db, c.Schemas); err != nil {
 		return nil, errors.Wrap(err, "open db")
 	} else {
 		return db, nil
@@ -94,18 +98,8 @@ func currentDB(db *sql.DB) (string, error) {
 	return currentDB, nil
 }
 
-//func Migrate(db *sql.DB) error {
-//return migrate(db, false)
-//}
-
-func migrate(db *sql.DB, clean bool) error {
-	var args []string
-	if clean {
-		args = append(args, "clean")
-	}
-	args = append(args, "migrate")
-
-	cmd := exec.Command("flyway.sh", args...)
+func migrate(db *sql.DB) error {
+	cmd := exec.Command("flyway.sh", "clean migrate")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return errors.Wrap(err, "migrate: "+string(out))
